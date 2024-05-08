@@ -6,61 +6,89 @@ class Electrometer:
     The annotation attribute is used later in the render() method.
     '''
     
-    def __init__(self, filepath: str, port = "COM1", baudrate = 9600):
+    def __init__(self, filepath: str, rate: int, unit: str):
         self.filepath = filepath
-        self.port = port
-        self.baudrate = baudrate
+        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM3', 2400], 
+                      'SyringePump' : ['COM3', 19200], 'Arduino' : ['COM3', 19200]}
+        self.rate = rate
+        self.unit = unit
         self.annotation = None
 
-        self.livePlotter()
+        self.liveInterface()
 
     '''
-    This livePlotter() method is called on the Electrometer object you've created to have it communicate with and live plot data from the Keithley 6514.
+    This liveInterface() method is called on the Electrometer object you've created to have it communicate with and live plot data from the Keithley 6514.
     Note that the recorded data will be saved to the absolute file path you provide, prefaced with r to take the string contents as unescaped characters.
     '''
-    
-    def livePlotter(self, delay_ms = 1000, plotLabelFontSize = 10, plotStyle = '.-r', annotColor = 'red'):
+
+    def liveInterface(self, delay_ms = 1000, plotLabelFontSize = 10, plotStyle = '.-r', annotColor = 'red'):
         import numpy as np
         import pandas as pd
         import matplotlib.pyplot as plt
         import serial
         import time
+        from pyarduino import Arduino
         from IPython.display import display
 
-        with serial.Serial(self.port, self.baudrate) as ser:
+        with (
+            serial.Serial(self.ports['Electrometer']) as serialElectrometer,
+            serial.Serial(self.ports['Scale']) as serialBalance,
+            serial.Serial(self.ports['SyringePump']) as serialSyringePump,
+            Arduino(self.ports['Arduino']) as arduino
+        ):
+        
         # The script creates a serial object, ser, with our earlier arguments to be used going forward
-            if (ser.isOpen() == False): ser.open()
+            if (serialElectrometer.isOpen() == False): serialElectrometer.open()
+            if (serialBalance.isOpen() == False): serialBalance.open()
+            if (serialSyringePump.isOpen() == False): serialSyringePump.open()
             # Check that the COM port of our ser object is currently closed, and if so, open it for communication
 
-            ser.write("*RST; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :SYST:ZCH OFF; :FORM:ELEM READ\n".encode('utf-8')) 
+            serialElectrometer.write("*RST; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :SYST:ZCH OFF; :FORM:ELEM READ\n".encode('utf-8'))
             # Commands to restore defaults, configure charge measurement with auto-range, disable zero check, and format to only return readings
+            serialSyringePump.write(("FUN [RAT [" + str(self.rate) + " [" + self.unit + "]]]").encode('utf-8'))
+            # Command to start pumping at the rate described in the arguments of the class definition
+
+            serialBalance.write("0A\r\n".encode('utf-8')); serialBalance.write("0M\r\n".encode('utf-8'))
+            serialBalance.write("0S\r\n".encode('utf-8')); serialBalance.write("T\r\n".encode('utf-8'))
+            # Commands to disable auto-print functionality, set unit to grams, and disable stability before zeroing the scale
             
             startTime = time.time()
             # Takes current UNIX time as t0
-            timeStamp, readings = np.zeros(1), np.zeros(1)
+            timeSeries, chargeReadings, massReadings, humidityReadings, temperatureReadings = np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1)
             # Declare single-valued "zero" arrays for use as our vectors
 
             try:
                 fig = plt.figure(figsize = (16, 9), facecolor = 'xkcd:light gray')
                 # Create our matplotlib figure object in 16:9 scale with a light gray background
+
+                serialSyringePump.write("FUN [RAT [500 [UM]]]".encode('utf-8'))
                 
                 while True:
                 # Everything indented below is within our continuously-executed while loop:
-                    timeStamp = np.append(timeStamp, (time.time() - startTime)) 
+                    timeSeries = np.append(timeSeries, (time.time() - startTime)) 
                     # Add new time step as UNIX time elapsed since t0
 
-                    ser.write("READ?\r".encode()) 
-                    # Query the electrometer for a reading
-                    readings = np.append(readings, float(ser.readline())) 
-                    # Add new reading--the float-converted ASCII response to our READ? query--to our data vector
+                    serialElectrometer.write("READ?\r".encode())
+                    chargeReadings = np.append(chargeReadings, float(serialElectrometer.readline())) 
+                    # Query the electrometer for a reading and add new reading--the float-converted ASCII response to our READ? query--to our data vector
+
+                    serialBalance.write("P\r\n".encode())
+                    massReadings = np.append(massReadings, float(serialBalance.readline()[:10])) 
+                    # Query the scale for a reading and add new reading--the float-converted ASCII response to our P (Print) query--to our data vector
+
+                    humidity = arduino.i2crequest(0x38, 0x00, 2)
+                    humidityReadings = np.append(humidityReadings, (float(humidity[0] << 8 | humidity[1]) * 100 / 65535))
+
+                    temperature = arduino.i2crequest(0x38, 0x02, 2)
+                    temperatureReadings = np.append(temperatureReadings, (float(temperature[0] << 8 | temperature[1]) * 200 / 65535 - 50))
                     
-                    self.render(timeStamp, readings, plotLabelFontSize, plotStyle, annotColor)
+                    self.render(timeSeries, chargeReadings, plotLabelFontSize, plotStyle, annotColor)
                     # Calls the render() method to plot our time and data vectors
 
                     display(fig)
                     # Display our figure object with the IPython cell renderer
 
-                    df = pd.DataFrame({'time (s)': [timeStamp[-1]], 'charge (pC)': [readings[-1]]})
+                    df = pd.DataFrame({'time (s)': [timeSeries[-1]], 'charge (pC)': [chargeReadings[-1]], 'mass (g)': [massReadings[-1]], 'RH (%)': [humidityReadings[-1]], 'temperature (C)': [temperatureReadings[-1]]})
                     # Make a new dataframe out of the most recent timestamped data point with shape [time, data]
                     df.to_csv(self.filepath, mode = 'a', header = False, index = False)
                     # Write or append this dataframe row to the .csv
@@ -70,7 +98,7 @@ class Electrometer:
 
             except KeyboardInterrupt:
             # Upon pressing the Interrupt button in an interactive window, the script stops and prints a brief summary of the full .csv
-                ser.close()
+                serialElectrometer.close(); serialBalance.close(); serialSyringePump.close(); arduino.close()
                 print("Exiting...")
                 print((pd.read_csv(self.filepath).describe(percentiles = []).map("{0:.2f}".format)))
 
