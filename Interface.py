@@ -8,8 +8,8 @@ class Electrometer:
     
     def __init__(self, filepath: str, rate: int, unit: str):
         self.filepath = filepath
-        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM3', 2400], 
-                      'SyringePump' : ['COM3', 19200], 'Arduino' : ['COM3', 19200]}
+        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM5', 2400], 
+                      'SyringePump' : ['COM7', 19200], 'Arduino' : ['COM4', 9600]}
         self.rate = rate
         self.unit = unit
         self.annotation = None
@@ -27,14 +27,14 @@ class Electrometer:
         import matplotlib.pyplot as plt
         import serial
         import time
-        from pyarduino import Arduino
+        import pyArduino
         from IPython.display import display
 
         with (
-            serial.Serial(self.ports['Electrometer']) as serialElectrometer,
-            serial.Serial(self.ports['Scale']) as serialBalance,
-            serial.Serial(self.ports['SyringePump']) as serialSyringePump,
-            Arduino(self.ports['Arduino']) as arduino
+            serial.Serial(self.ports['Electrometer'][0], self.ports['Electrometer'][1]) as serialElectrometer,
+            serial.Serial(self.ports['Scale'][0], self.ports['Scale'][1]) as serialBalance,
+            serial.Serial(self.ports['SyringePump'][0], self.ports['SyringePump'][1]) as serialSyringePump,
+            pyArduino.Arduino(self.ports['Arduino'][0], self.ports['Arduino'][1]) as arduino
         ):
         
         # The script creates a serial object, ser, with our earlier arguments to be used going forward
@@ -45,8 +45,6 @@ class Electrometer:
 
             serialElectrometer.write("*RST; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :SYST:ZCH OFF; :FORM:ELEM READ\n".encode('utf-8'))
             # Commands to restore defaults, configure charge measurement with auto-range, disable zero check, and format to only return readings
-            serialSyringePump.write(("FUN [RAT [" + str(self.rate) + " [" + self.unit + "]]]").encode('utf-8'))
-            # Command to start pumping at the rate described in the arguments of the class definition
 
             serialBalance.write("0A\r\n".encode('utf-8')); serialBalance.write("0M\r\n".encode('utf-8'))
             serialBalance.write("0S\r\n".encode('utf-8')); serialBalance.write("T\r\n".encode('utf-8'))
@@ -61,7 +59,8 @@ class Electrometer:
                 fig = plt.figure(figsize = (16, 9), facecolor = 'xkcd:light gray')
                 # Create our matplotlib figure object in 16:9 scale with a light gray background
 
-                serialSyringePump.write("FUN [RAT [500 [UM]]]".encode('utf-8'))
+                serialSyringePump.write(("FUN [RAT [" + str(self.rate) + " [" + self.unit + "]]]\r").encode('utf-8'))
+                # Command to start pumping at the rate described in the arguments of the class definition
                 
                 while True:
                 # Everything indented below is within our continuously-executed while loop:
