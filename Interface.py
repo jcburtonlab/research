@@ -8,10 +8,17 @@ class Electrometer:
     
     def __init__(self, filepath: str, rate: int, unit: str):
         self.filepath = filepath
-        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM5', 2400], 
-                      'SyringePump' : ['COM7', 19200], 'Arduino' : ['COM4', 9600]}
+        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM9', 2400], 
+                      'SyringePump' : ['COM11', 1200], 'Arduino' : ['COM4', 9600]}
         self.rate = rate
-        self.unit = unit
+        self.unit = unit.upper()
+        match self.unit():
+            case 'UM': self.formUnit = f'${self.rate}\,\mu l/min$'
+            case 'MM': self.formUnit = f'${self.rate}\,ml/min$'
+            case 'UH': self.formUnit = f'${self.rate}\,\mu l/hr$'
+            case 'MH': self.formUnit = f'${self.rate}\,\ml/hr$'
+            case _: 
+                print("Incorrect pump rate unit argument. Options are 'UM' ($\mu l/min$), 'MM' ($ml/min$), 'UH' ($\mu l/hr$), and 'MH' ($ml/hr$).")
         self.annotation = None
 
         self.liveInterface()
@@ -27,20 +34,20 @@ class Electrometer:
         import matplotlib.pyplot as plt
         import serial
         import time
-        import pyArduino
         from IPython.display import display
 
         with (
             serial.Serial(self.ports['Electrometer'][0], self.ports['Electrometer'][1]) as serialElectrometer,
-            serial.Serial(self.ports['Scale'][0], self.ports['Scale'][1]) as serialBalance,
+            serial.Serial(self.ports['Scale'][0], self.ports['Scale'][1], bytesize = 7) as serialBalance,
             serial.Serial(self.ports['SyringePump'][0], self.ports['SyringePump'][1]) as serialSyringePump,
-            pyArduino.Arduino(self.ports['Arduino'][0], self.ports['Arduino'][1]) as arduino
+            serial.Serial(self.ports['Arduino'][0], self.ports['Arduino'][1]) as arduino
+            # The script creates a serial object for each external device with our earlier arguments
         ):
-        
-        # The script creates a serial object, ser, with our earlier arguments to be used going forward
+
             if (serialElectrometer.isOpen() == False): serialElectrometer.open()
             if (serialBalance.isOpen() == False): serialBalance.open()
             if (serialSyringePump.isOpen() == False): serialSyringePump.open()
+            if (arduino.isOpen() == False): arduino.open()
             # Check that the COM port of our ser object is currently closed, and if so, open it for communication
 
             serialElectrometer.write("*RST; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :SYST:ZCH OFF; :FORM:ELEM READ\n".encode('utf-8'))
@@ -72,16 +79,15 @@ class Electrometer:
                     # Query the electrometer for a reading and add new reading--the float-converted ASCII response to our READ? query--to our data vector
 
                     serialBalance.write("P\r\n".encode())
-                    massReadings = np.append(massReadings, float(serialBalance.readline()[:10])) 
+                    massReadings = np.append(massReadings, float(serialBalance.read_until(b"\r\n")[:13]))
                     # Query the scale for a reading and add new reading--the float-converted ASCII response to our P (Print) query--to our data vector
 
-                    humidity = arduino.i2crequest(0x38, 0x00, 2)
-                    humidityReadings = np.append(humidityReadings, (float(humidity[0] << 8 | humidity[1]) * 100 / 65535))
-
-                    temperature = arduino.i2crequest(0x38, 0x02, 2)
-                    temperatureReadings = np.append(temperatureReadings, (float(temperature[0] << 8 | temperature[1]) * 200 / 65535 - 50))
+                    ahtReadout = arduino.readline()
+                    temperatureReadings = np.append(temperatureReadings, float(ahtReadout[:5]))
+                    humidityReadings = np.append(humidityReadings, float(ahtReadout[6:11]))
+                    # Read and parse the printed line from the Arduino Uno for humidity and temperature values
                     
-                    self.render(timeSeries, chargeReadings, plotLabelFontSize, plotStyle, annotColor)
+                    self.render(timeSeries, chargeReadings, [temperatureReadings[-1], humidityReadings[-1], massReadings[-1]], plotLabelFontSize, plotStyle, annotColor)
                     # Calls the render() method to plot our time and data vectors
 
                     display(fig)
@@ -105,7 +111,7 @@ class Electrometer:
     No need to manually call this render() function, as it's called in our while loop above to plot on and update our figure.
     '''
     
-    def render(self, x, y, fontSize: int, plotStyle: str, color: str):
+    def render(self, x, y, s, fontSize: int, plotStyle: str, color: str):
         import matplotlib.pyplot as plt
         from IPython.display import clear_output
         
@@ -113,6 +119,12 @@ class Electrometer:
         # Plot our data vector (scaled for pC) over time on our figure object
         plt.title('Cup Charge'); plt.xlabel('time (s)', fontsize = fontSize); plt.ylabel('charge (pC)', fontsize = fontSize)
         # Set figure title and axes labels
+
+        plt.subplots_adjust(top = 0.85)
+        plt.figtext(0.128, 0.87, 
+                    f"Temperature: ${s[0]:.2f}^{{\circ}}\,\\text{{C}}$\nRelative Humidity: ${s[1]:.2%}$\nMass: ${s[2]:.2f}\,\\text{{g}}$\nPump Rate: {self.formUnit}", 
+                    fontsize = fontSize, color = 'w', bbox = {'facecolor' : 'k', 'alpha' : 0.9, 'boxstyle' : 'round'})
+        # Pad the top of the figure and add live-updating value readout for extras
         
         y_value = "{:.2e}".format(y[-1] * 1e12)
         # Scale and format our latest data point to 2 decimal place scientific notation for live plot annotation
