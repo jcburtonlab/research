@@ -1,22 +1,21 @@
 class Electrometer:
-    # electrometer = Electrometer(r'C:\Users\burtonlabuser\Desktop\example_datasheet.csv')
+    # electrometer = Electrometer(r'C:\Users\burtonlabuser\Desktop\example_datasheet.csv', 500, 'um')
     '''
     Call this to create an Electrometer object, the name of which can be anything.
     If you need to change from the default COM port or baud rate for serial communication, do so with arguments when creating this object.
     The annotation attribute is used later in the render() method.
     '''
     
-    def __init__(self, filepath: str, rate: int, unit: str):
+    def __init__(self, filepath: str, rate: float, unit: str):
         self.filepath = filepath
-        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM9', 2400], 
-                      'SyringePump' : ['COM11', 1200], 'Arduino' : ['COM4', 9600]}
+        self.ports = {'Electrometer' : ['COM1', 9600], 'Scale' : ['COM9', 2400], 'SyringePump' : ['COM12', 1200], 'Arduino' : ['COM4', 9600]}
         self.rate = rate
-        self.unit = unit.upper()
-        match self.unit():
-            case 'UM': self.formUnit = f'${self.rate}\,\mu l/min$'
-            case 'MM': self.formUnit = f'${self.rate}\,ml/min$'
-            case 'UH': self.formUnit = f'${self.rate}\,\mu l/hr$'
-            case 'MH': self.formUnit = f'${self.rate}\,\ml/hr$'
+        self.unit = unit.lower()
+        match self.unit:
+            case 'um': self.formUnit = f'${self.rate}\,\mu l/min$'
+            case 'mm': self.formUnit = f'${self.rate}\,ml/min$'
+            case 'uh': self.formUnit = f'${self.rate}\,\mu l/hr$'
+            case 'mh': self.formUnit = f'${self.rate}\,\ml/hr$'
             case _: 
                 print("Incorrect pump rate unit argument. Options are 'UM' ($\mu l/min$), 'MM' ($ml/min$), 'UH' ($\mu l/hr$), and 'MH' ($ml/hr$).")
         self.annotation = None
@@ -44,48 +43,63 @@ class Electrometer:
             # The script creates a serial object for each external device with our earlier arguments
         ):
 
-            if (serialElectrometer.isOpen() == False): serialElectrometer.open()
-            if (serialBalance.isOpen() == False): serialBalance.open()
-            if (serialSyringePump.isOpen() == False): serialSyringePump.open()
-            if (arduino.isOpen() == False): arduino.open()
+            if not serialElectrometer.isOpen(): serialElectrometer.open()
+            if not serialBalance.isOpen(): serialBalance.open()
+            if not serialSyringePump.isOpen(): serialSyringePump.open()
+            if not arduino.isOpen(): arduino.open()
             # Check that the COM port of our ser object is currently closed, and if so, open it for communication
 
-            serialElectrometer.write("*RST; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :SYST:ZCH OFF; :FORM:ELEM READ\n".encode('utf-8'))
+            serialElectrometer.write(b"*RST; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :SYST:ZCH OFF; :FORM:ELEM READ\n")
             # Commands to restore defaults, configure charge measurement with auto-range, disable zero check, and format to only return readings
 
-            serialBalance.write("0A\r\n".encode('utf-8')); serialBalance.write("0M\r\n".encode('utf-8'))
-            serialBalance.write("0S\r\n".encode('utf-8')); serialBalance.write("T\r\n".encode('utf-8'))
+            serialBalance.write(b"0A\r\n"); serialBalance.write(b"0M\r\n")
+            serialBalance.write(b"0S\r\n"); serialBalance.write(b"T\r\n")
             # Commands to disable auto-print functionality, set unit to grams, and disable stability before zeroing the scale
             
             startTime = time.time()
             # Takes current UNIX time as t0
-            timeSeries, chargeReadings, massReadings, humidityReadings, temperatureReadings = np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1)
+            timeSeries, chargeReadings, massReadings, humidityReadings, temperatureReadings = np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1)
             # Declare single-valued "zero" arrays for use as our vectors
 
             try:
                 fig = plt.figure(figsize = (16, 9), facecolor = 'xkcd:light gray')
                 # Create our matplotlib figure object in 16:9 scale with a light gray background
 
-                serialSyringePump.write(("FUN [RAT [" + str(self.rate) + " [" + self.unit + "]]]\r").encode('utf-8'))
-                # Command to start pumping at the rate described in the arguments of the class definition
+                pumpCommands = ["dia14.81", "phn1", "funrat", ("rat" + str(self.rate) + self.unit), "vol15.0", "dirinf", "run1"]
+
+                for command in pumpCommands:
+                    packet = command.encode() + b"\r"
+                    serialSyringePump.write(packet)
+                    time.sleep(1)
+                # Commands to start pump infusion program at the rate described in the arguments of the class definition
                 
                 while True:
                 # Everything indented below is within our continuously-executed while loop:
                     timeSeries = np.append(timeSeries, (time.time() - startTime)) 
                     # Add new time step as UNIX time elapsed since t0
 
-                    serialElectrometer.write("READ?\r".encode())
+                    serialElectrometer.write(b"READ?\r")
                     chargeReadings = np.append(chargeReadings, float(serialElectrometer.readline())) 
                     # Query the electrometer for a reading and add new reading--the float-converted ASCII response to our READ? query--to our data vector
 
-                    serialBalance.write("P\r\n".encode())
-                    massReadings = np.append(massReadings, float(serialBalance.read_until(b"\r\n")[:13]))
+                    serialBalance.write(b"P\r\n")
+                    mass = serialBalance.read_until(b"\r\n")[:13]
+                    if (mass == b"ES\r\n"): mass = np.nan
+                    massReadings = np.append(massReadings, float(mass))
                     # Query the scale for a reading and add new reading--the float-converted ASCII response to our P (Print) query--to our data vector
 
-                    ahtReadout = arduino.readline()
-                    temperatureReadings = np.append(temperatureReadings, float(ahtReadout[:5]))
-                    humidityReadings = np.append(humidityReadings, float(ahtReadout[6:11]))
-                    # Read and parse the printed line from the Arduino Uno for humidity and temperature values
+                    ahtReadout = arduino.read_until(b"\r\n")
+                    decoded_splitline = ahtReadout.split(b"\r\n")[0].decode()
+                    try: 
+                        temp, hum = decoded_splitline[:decoded_splitline.index(';')], decoded_splitline[decoded_splitline.index(';')+1:]
+                        if (len(temp) > 5 or temp == ''): temp = np.nan
+                        if (len(hum) > 5 or hum == ''): hum = np.nan
+                    except ValueError:
+                        temp, hum = np.nan, np.nan
+                    finally:
+                        temperatureReadings = np.append(temperatureReadings, float(temp))
+                        humidityReadings = np.append(humidityReadings, float(hum))
+                        # Read and parse the printed line from the Arduino Uno for humidity and temperature values
                     
                     self.render(timeSeries, chargeReadings, [temperatureReadings[-1], humidityReadings[-1], massReadings[-1]], plotLabelFontSize, plotStyle, annotColor)
                     # Calls the render() method to plot our time and data vectors
@@ -93,7 +107,7 @@ class Electrometer:
                     display(fig)
                     # Display our figure object with the IPython cell renderer
 
-                    df = pd.DataFrame({'time (s)': [timeSeries[-1]], 'charge (pC)': [chargeReadings[-1]], 'mass (g)': [massReadings[-1]], 'RH (%)': [humidityReadings[-1]], 'temperature (C)': [temperatureReadings[-1]]})
+                    df = pd.DataFrame({"time (s)": [timeSeries[-1]], "charge (pC)": [chargeReadings[-1]], "mass (g)": [massReadings[-1]], "RH (%)": [humidityReadings[-1]], "temperature (C)": [temperatureReadings[-1]]})
                     # Make a new dataframe out of the most recent timestamped data point with shape [time, data]
                     df.to_csv(self.filepath, mode = 'a', header = False, index = False)
                     # Write or append this dataframe row to the .csv
@@ -102,10 +116,11 @@ class Electrometer:
                     # Wait n milliseconds before taking the next data point
 
             except KeyboardInterrupt:
-            # Upon pressing the Interrupt button in an interactive window, the script stops and prints a brief summary of the full .csv
-                serialElectrometer.close(); serialBalance.close(); serialSyringePump.close(); arduino.close()
-                print("Exiting...")
-                print((pd.read_csv(self.filepath).describe(percentiles = []).map("{0:.2f}".format)))
+            # Upon pressing the Interrupt button in an interactive window, the script stops and prints path for the .csv
+                serialElectrometer.close(); serialBalance.close(); arduino.close()
+                serialSyringePump.write(b'stp\r'); serialSyringePump.close()
+                
+                print("Exiting...", f"Data saved to {self.filepath}.")
 
     '''
     No need to manually call this render() function, as it's called in our while loop above to plot on and update our figure.
@@ -122,7 +137,7 @@ class Electrometer:
 
         plt.subplots_adjust(top = 0.85)
         plt.figtext(0.128, 0.87, 
-                    f"Temperature: ${s[0]:.2f}^{{\circ}}\,\\text{{C}}$\nRelative Humidity: ${s[1]:.2%}$\nMass: ${s[2]:.2f}\,\\text{{g}}$\nPump Rate: {self.formUnit}", 
+                    f"Temperature: {s[0]:.2f}$\,^{{\circ}}\,\\text{{C}}$\nRelative Humidity: {s[1]}%\nMass: {s[2]:.2f}$\,\\text{{g}}$\nPump Rate: {self.formUnit}", 
                     fontsize = fontSize, color = 'w', bbox = {'facecolor' : 'k', 'alpha' : 0.9, 'boxstyle' : 'round'})
         # Pad the top of the figure and add live-updating value readout for extras
         
