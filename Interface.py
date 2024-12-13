@@ -7,33 +7,11 @@ class Electrometer:
     def __init__(self, filepath: str, syringe_type : str, program : dict[str : [float, str]]):
         self.filepath = filepath; self.annotation = None
         self.ports = {'Electrometer' : ['COM1', 9600], 'NewScale' : ['COM17', 19200], 'SyringePump' : ['COM15', 19200], 'Arduino' : ['COM4', 9600]}
-        self.syrdiam = 21.46 if syringe_type == 'g' else 20.1
+        self.syrdiam = 28.00 if syringe_type == 'g' else 20.1 if syringe_type == 'p' else 14.8 if syringe_type == 'r' else 23.37 if syringe_type == 'b' else 0 #28.00 for 50ml glass, 21.46 for 20mL glass and 20.1 for plastic Henke-ject
+        self.program = program
+        self.volume_ml = 20
         
-        match len(program):
-            case 1:
-                self.phases = 1
-                self.rate = program['p1'][0]
-                self.unit = (program['p1'][1]).lower()
-                match self.unit:
-                    case 'um': self.formUnit = f'${self.rate}\,\mu l/min$'; self.convertedRate = self.rate * (1/(1000*60))
-                    case 'mm': self.formUnit = f'${self.rate}\,ml/min$'; self.convertedRate = self.rate * (1/60)
-                    case 'uh': self.formUnit = f'${self.rate}\,\mu l/hr$'; self.convertedRate = self.rate * (1/(1000*3600))
-                    case 'mh': self.formUnit = f'${self.rate}\,\ml/hr$'; self.convertedRate = self.rate * (1/(3600)) 
-                    case _: print("Incorrect pump rate unit argument. Options are 'UM' ($\mu l/min$), 'MM' ($ml/min$), 'UH' ($\mu l/hr$), and 'MH' ($ml/hr$).")
-                self.pumpCommands = ["dia" + str(self.syrdiam), "phn1", "funbep", "funrat", "rat" + str(self.rate) + self.unit, "vol2.0", "dirinf", "run1"]
-            case 2:
-                self.phases = 2
-                self.rate = [program['p1'][0], program['p2'][0]]
-                self.unit = [(program['p1'][1]).lower(), (program['p2'][1]).lower()]; self.formUnit = ['', '']; self.convertedRate = [0, 0]
-                for i in range(2):
-                    match self.unit[i]:
-                        case 'um': self.formUnit[i] = f'${self.rate[i]}\,\mu l/min$'; self.convertedRate[i] = self.rate[i] * (1/(1000*60))
-                        case 'mm': self.formUnit[i] = f'${self.rate[i]}\,ml/min$'; self.convertedRate[i] = self.rate[i] * (1/60)
-                        case 'uh': self.formUnit[i] = f'${self.rate[i]}\,\mu l/hr$'; self.convertedRate[i] = self.rate[i] * (1/(1000*3600))
-                        case 'mh': self.formUnit[i] = f'${self.rate[i]}\,\ml/hr$'; self.convertedRate[i] = self.rate[i] * (1/(3600)) 
-                        case _: print("Incorrect pump rate unit argument. Options are 'UM' ($\mu l/min$), 'MM' ($ml/min$), 'UH' ($\mu l/hr$), and 'MH' ($ml/hr$).")
-                self.pumpCommands = ["dia" + str(self.syrdiam), "phn1", "funrat", "rat" + str(self.rate[0]) + self.unit[0], "vol2.0", "dirinf", "run1", "stp",
-                                    "phn2", "funrat", "rat" + str(self.rate[1]) + self.unit[1], "vol2.0", "dirinf", "run2"]
+        self.pumpCommands = self.programmer()
         
         self.liveInterface()
     
@@ -60,14 +38,28 @@ class Electrometer:
                 timeSeries = [0]; chargeReadings = [0]; massReadings = [0]; humidityReadings = [0]; temperatureReadings = [0]
                 # Declare empty lists for use as our time and data vectors
 
-                serialElectrometer.write(b"*RST; :SYST:ZCH ON; :SENS:FUNC 'CHAR'; CHAR:RANG:UPP 20e-9; :FORM:ELEM READ; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
-                #serialElectrometer.write(b"*RST; :SYST:ZCH ON; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :FORM:ELEM READ; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
+                #serialElectrometer.write(b"*RST; :SYST:ZCH ON; :SENS:FUNC 'CHAR'; CHAR:RANG:UPP 20e-9; :FORM:ELEM READ; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
+                #serialElectrometer.write(b"*RST; :SYST:ZCH ON; :SENS:FUNC 'CURR'; CURR:RANG 20e-12; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
+                #time.sleep(30)
+                # Discharge in 20pA-range current mode for 30 seconds before switching to charge mode for recording
+                #serialElectrometer.write(b":SYST:ZCH ON; :SENS:FUNC 'CHAR'; CHAR:RANG 20e-9; :FORM:ELEM READ; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
+                
+                #GOOD 
+                serialElectrometer.write(b"*RST; :SYST:ZCH ON; :SENS:FUNC 'CHAR'; CHAR:RANG 20e-9; :FORM:ELEM READ; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
+                #serialElectrometer.write(b"*RST; :SYST:ZCH ON; :SENS:FUNC 'CURR'; CURR:RANG 20e-12; :FORM:ELEM READ; :SYST:ZCOR ON; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
+
+                #serialElectrometer.write(b":SYST:ZCH ON; :SENS:FUNC 'CHAR'; CHAR:RANG:AUTO ON; :FORM:ELEM READ; :SYST:ZCH OFF; :CALC2:NULL:STAT ON\n")
                 # Commands to restore defaults, enable zero check, configure charge measurement with the 20nC range, format to only return readings, disable zero check, and set relative
 
                 #for command in ["0A", "0M", "0S", "T"]:
                 #    serialBalance.write(command.encode() + b"\r\n")
                 #    time.sleep(comdelay_s)
                 # Commands to disable auto-print functionality, set unit to grams, and disable stability before zeroing the scale
+
+                for command in self.pumpCommands:
+                    serialSyringePump.write(command.encode() + b"\r")
+                    time.sleep(comdelay_s)
+                # Commands to start pump infusion program at the rate described in the arguments of the class definition
 
                 serialBalance.write(b"Z\r\n")
                 
@@ -84,12 +76,9 @@ class Electrometer:
 
                         humidityReadings.append(0); temperatureReadings.append(0)
 
-                    for command in self.pumpCommands:
-                        serialSyringePump.write(command.encode() + b"\r")
-                        time.sleep(comdelay_s)
-                    # Commands to start pump infusion program at the rate described in the arguments of the class definition
-
-                    while (timeSeries[-1] < 450):
+                    serialSyringePump.write(b"run1\r")
+                    
+                    while (timeSeries[-1] < ((self.volume_ml / self.convertedRate) + 30)):
                         timeSeries.append(time.time() - t0)
                         # Add new time step as UNIX time elapsed since t0
 
@@ -105,7 +94,20 @@ class Electrometer:
                         
                         time.sleep(loopdelay_s)
                         # Wait n seconds before taking the next data point
-                else:
+                    
+                    serialSyringePump.write(b"stp\r")
+
+                    while ((timeSeries[-1] > ((2 / self.convertedRate) + 30)) and (timeSeries[-1] < ((2 / self.convertedRate) + 75))):
+                        timeSeries.append(time.time() - t0)
+                        # Add new time step as UNIX time elapsed since t0
+
+                        self.comsideration(serialElectrometer, chargeReadings)
+                        self.comsideration(serialBalance, massReadings)
+                        self.comsideration(arduino, [temperatureReadings, humidityReadings])
+
+                        time.sleep(loopdelay_s)
+
+                elif self.phases == 2:
                     while (timeSeries[-1] < 30):
                         timeSeries.append(time.time() - t0)
                         # Add new time step as UNIX time elapsed since t0
@@ -115,12 +117,9 @@ class Electrometer:
 
                         humidityReadings.append(0); temperatureReadings.append(0)
 
-                    for command in self.pumpCommands[:7]:
-                        serialSyringePump.write(command.encode() + b"\r")
-                        time.sleep(comdelay_s)
-                    # Commands to start pump infusion program at the rate described in the arguments of the class definition
+                    serialSyringePump.write(b"run1\r")
 
-                    while (timeSeries[-1] < 450):
+                    while (timeSeries[-1] < ((2 / self.convertedRate[0]) + 30)):
                         timeSeries.append(time.time() - t0)
                         # Add new time step as UNIX time elapsed since t0
 
@@ -137,12 +136,9 @@ class Electrometer:
                         time.sleep(loopdelay_s)
                         # Wait n seconds before taking the next data point
 
-                    for command in self.pumpCommands[7:]:
-                        serialSyringePump.write(command.encode() + b"\r")
-                        time.sleep(comdelay_s)
-                    # Commands to start pump infusion program at the rate described in the arguments of the class definition
+                    serialSyringePump.write(b"run2\r")
 
-                    while (timeSeries[-1] < 1000):
+                    while (timeSeries[-1] < ((2 / self.convertedRate[0]) + (2 / self.convertedRate[1]) + 30)):
                         timeSeries.append(time.time() - t0)
                         # Add new time step as UNIX time elapsed since t0
 
@@ -162,8 +158,8 @@ class Electrometer:
 
             except KeyboardInterrupt: pass
             finally:
-                serialElectrometer.close(); serialBalance.close(); arduino.close()
-                serialSyringePump.write(b'stp\r'); serialSyringePump.close()
+                serialElectrometer.close(); serialBalance.close(); arduino.close(); serialSyringePump.close()
+                #serialSyringePump.write(b'stp\r'); 
 
                 df = pd.DataFrame(dict([(keys, pd.Series(values)) for keys, values 
                                   in {"time (s)": timeSeries, "charge (pC)": chargeReadings, "mass (g)": massReadings, "RH (%)": humidityReadings, "temp (C)": temperatureReadings}.items()]))
@@ -173,7 +169,8 @@ class Electrometer:
                 
                 print("Exiting...", f"Data is located at {self.filepath}.")
                 # Upon pressing the Interrupt button in an interactive window, or the duration of the program completes, the script stops and prints path for the .csv
-    
+                self.imgPreview(df)
+
     def comsideration(self, serial_device, data_vector : list | list[list]):
         '''
         This `comsideration()` function is called in the `liveInterface()` while loop to communicate with and capture readings from our serial instruments.
@@ -183,7 +180,12 @@ class Electrometer:
 
         if (serial_device.port == self.ports['Electrometer'][0]):
             serial_device.write(b"READ?\r")
-            data_vector.append(float(serial_device.readline()) * 1e12)
+            electrometerReadout = serial_device.readline()
+            try:
+                charge = float(electrometerReadout) * 1e12
+            except ValueError: charge = np.nan
+            finally:
+                data_vector.append(charge)
             # Query the electrometer for a reading and add new reading--the float-converted ASCII response to our READ? query--to our data vector
         
         elif (serial_device.port == self.ports['NewScale'][0]):
@@ -197,8 +199,10 @@ class Electrometer:
             ahtReadout = (serial_device.read_until(b"\r\n")).split(b"\r\n")[0].decode()
             try: 
                 temp, hum = ahtReadout[:ahtReadout.index(';')], ahtReadout[ahtReadout.index(';')+1:]
-                if (len(temp) > 5 or temp == '' or (len(re.findall("\.", temp)) > 1)): temp = np.nan
-                if (len(hum) > 5 or hum == '' or (len(re.findall("\.", hum)) > 1)): hum = np.nan
+                if (len(temp) > 5 or temp == '' or (len(re.findall("\.", temp)) > 1) or (len(re.findall(r'\n', temp)) > 1) or (len(re.findall(r'\r', temp)) > 1)): 
+                    temp = np.nan
+                if (len(hum) > 5 or hum == '' or (len(re.findall("\.", hum)) > 1) or (len(re.findall(r'\n', hum)) > 1) or (len(re.findall(r'\n', hum)) > 1)): 
+                    hum = np.nan
             except ValueError: temp, hum = np.nan, np.nan
             finally:
                 data_vector[0].append(float(temp))
@@ -243,6 +247,53 @@ class Electrometer:
         # Clear previous output from the IPython cell renderer so we only have one figure rendered
         plt.draw()
         # Update our figure
+
+    def programmer(self):
+        self.phases = len(self.program)
+
+        if self.phases == 1:
+            self.rate = self.program['p1'][0]
+            self.unit = (self.program['p1'][1]).lower()
+            match self.unit:
+                case 'um': self.formUnit = f'${self.rate}\,\mu l/min$'; self.convertedRate = self.rate * (1/(1000*60))
+                case 'mm': self.formUnit = f'${self.rate}\,ml/min$'; self.convertedRate = self.rate * (1/60)
+                case 'uh': self.formUnit = f'${self.rate}\,\mu l/hr$'; self.convertedRate = self.rate * (1/(1000*3600))
+                case 'mh': self.formUnit = f'${self.rate}\,\ml/hr$'; self.convertedRate = self.rate * (1/(3600)) 
+                case _: print("Incorrect pump rate unit argument.")
+            pumpCommands = ["dia" + str(self.syrdiam), "phn1", "funrat", "rat" + str(self.rate) + self.unit, "vol2.0", "dirinf"]
+
+        elif self.phases == 2:
+            self.rate = [self.program['p1'][0], self.program['p2'][0]]
+            self.unit = [(self.program['p1'][1]).lower(), (self.program['p2'][1]).lower()]; self.formUnit = ['', '']; self.convertedRate = [0, 0]
+            for i in range(self.phases):
+                match self.unit[i]:
+                    case 'um': self.formUnit[i] = f'${self.rate[i]}\,\mu l/min$'; self.convertedRate[i] = self.rate[i] * (1/(1000*60))
+                    case 'mm': self.formUnit[i] = f'${self.rate[i]}\,ml/min$'; self.convertedRate[i] = self.rate[i] * (1/60)
+                    case 'uh': self.formUnit[i] = f'${self.rate[i]}\,\mu l/hr$'; self.convertedRate[i] = self.rate[i] * (1/(1000*3600))
+                    case 'mh': self.formUnit[i] = f'${self.rate[i]}\,\ml/hr$'; self.convertedRate[i] = self.rate[i] * (1/(3600)) 
+                    case _: print("Incorrect pump rate unit argument. Options are 'UM' ($\mu l/min$), 'MM' ($ml/min$), 'UH' ($\mu l/hr$), and 'MH' ($ml/hr$).")
+            pumpCommands = ["dia" + str(self.syrdiam), "phn1", "funrat", "rat" + str(self.rate[0]) + self.unit[0], "vol2.0", "dirinf", 
+                                    "phn2", "funrat", "rat" + str(self.rate[1]) + self.unit[1], "vol2.0", "dirinf"]
+        else:
+            print("Too many phases specified.")
+
+        return pumpCommands
+
+    def imgPreview(self, data):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        fig, ax = plt.subplots(1, 1, figsize = (10, 5))
+
+        ax.plot(data.loc[:, 'time (s)'].to_numpy(dtype = np.float64), data.loc[:, 'charge (pC)'].to_numpy(dtype = np.float64), 'r')
+        ax.set_xlabel("time (s)"); ax.set_ylabel("charge (pC)", color = 'r')
+
+        ax1 = ax.twinx()
+        ax1.plot(data.loc[:, 'time (s)'].to_numpy(dtype = np.float64), data.loc[:, 'mass (g)'].to_numpy(dtype = np.float64), 'b')
+
+        ax1.set_xlabel("time (s)"); ax1.set_ylabel("mass (g)", color = 'b')
+        plt.title('Recording Preview')
+        plt.show()
 
 class Chamber:
     # chamber = Monitor(True, 'Dev2/ai0', '3A', r'C:\Users\burtonlabuser\Desktop\example_datasheet.csv')
